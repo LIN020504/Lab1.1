@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   security-checks:
     runs-on: ubuntu-latest
@@ -40,3 +43,19 @@ jobs:
 
       - name: Run pip-audit SCA scan
         run: python -m pip_audit -r requirements.txt
+
+      - name: Set up Snyk CLI
+        uses: snyk/actions/setup@master
+
+      - name: Run Snyk SCA scan
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --file=requirements.txt --package-manager=pip --json-file-output=snyk.json
+
+      - name: Upload Snyk scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-sca-report
+          path: security-rest-api/snyk.json
+          if-no-files-found: warn
