@@ -3,16 +3,18 @@ import os
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from html import escape
 from pathlib import Path
 
 import jwt
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
 
 
 SECRET_KEY = os.getenv("JWT_SECRET")
+
 if not SECRET_KEY:
     raise RuntimeError("Please set the JWT_SECRET environment variable")
 
@@ -21,14 +23,13 @@ ACCESS_TOKEN_MINUTES = 30
 
 app = FastAPI(
     title="Security REST API",
-    description="User registration and JWT authentication",
+    description="REST API with password hashing and JWT authentication",
     version="1.0.0",
 )
 
 DB_PATH = Path(__file__).with_name("users.db")
 password_hash = PasswordHash.recommended()
 bearer_scheme = HTTPBearer()
-
 
 def get_db():
     connection = sqlite3.connect(DB_PATH)
@@ -52,7 +53,6 @@ def init_db():
 
 init_db()
 
-
 class RegisterRequest(BaseModel):
     username: str = Field(
         min_length=3,
@@ -67,40 +67,41 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
-class UserResponse(BaseModel):
-    id: int
-    username: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
+def escape_html(value: str) -> str:
+    """Escape HTML-sensitive characters for HTML output contexts."""
+    return escape(value, quote=True)
 
 
 def create_access_token(user_id: int, username: str) -> str:
     now = datetime.now(timezone.utc)
+
     payload = {
         "sub": str(user_id),
         "username": username,
         "iat": now,
         "exp": now + timedelta(minutes=ACCESS_TOKEN_MINUTES),
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+    return jwt.encode(
+        payload,
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
 
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ):
-    token = credentials.credentials
-
     try:
         payload = jwt.decode(
-            token,
+            credentials.credentials,
             SECRET_KEY,
             algorithms=[ALGORITHM],
-            options={"require": ["sub", "exp", "iat"]},
+            options={"require": ["sub", "iat", "exp"]},
         )
+
         user_id = int(payload["sub"])
+
     except (jwt.InvalidTokenError, ValueError, TypeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -123,24 +124,9 @@ def get_current_user(
 
     return dict(user)
 
-
-@app.get("/")
-def home():
-    return {"message": "Security REST API is running"}
-
-
-@app.get("/health")
-def health_check():
-    return {"status": "healthy"}
-
-
-@app.post(
-    "/register",
-    response_model=UserResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def register(user: RegisterRequest):
-    hashed_password = password_hash.hash(user.password)
+@app.post("/register", status_code=status.HTTP_201_CREATED)
+def register(data: RegisterRequest):
+    hashed_password = password_hash.hash(data.password)
 
     try:
         with closing(get_db()) as db:
@@ -149,14 +135,15 @@ def register(user: RegisterRequest):
                 INSERT INTO users (username, password_hash)
                 VALUES (?, ?)
                 """,
-                (user.username, hashed_password),
+                (data.username, hashed_password),
             )
             db.commit()
 
-            return UserResponse(
-                id=cursor.lastrowid,
-                username=user.username,
-            )
+            return {
+                "id": cursor.lastrowid,
+                "username": data.username,
+            }
+
     except sqlite3.IntegrityError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -164,8 +151,8 @@ def register(user: RegisterRequest):
         )
 
 
-@app.post("/auth/login", response_model=TokenResponse)
-def login(credentials: LoginRequest):
+@app.post("/auth/login")
+def login(data: LoginRequest):
     with closing(get_db()) as db:
         user = db.execute(
             """
@@ -173,11 +160,12 @@ def login(credentials: LoginRequest):
             FROM users
             WHERE username = ?
             """,
-            (credentials.username,),
+            (data.username,),
         ).fetchone()
 
     if user is None or not password_hash.verify(
-        credentials.password, user["password_hash"]
+        data.password,
+        user["password_hash"],
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -186,12 +174,12 @@ def login(credentials: LoginRequest):
         )
 
     token = create_access_token(user["id"], user["username"])
-    return TokenResponse(access_token=token)
 
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+    }
 
-@app.get("/me", response_model=UserResponse)
-def get_me(user: dict = Depends(get_current_user)):
-    return UserResponse(**user)
 
 @app.get("/api/data")
 def get_data(user: dict = Depends(get_current_user)):
@@ -203,3 +191,11 @@ def get_data(user: dict = Depends(get_current_user)):
             {"id": 2, "title": "REST API protection"},
         ],
     }
+
+@app.get("/me")
+def get_me(user: dict = Depends(get_current_user)):
+    return {
+        "id": user["id"],
+        "username": user["username"],
+    }
+

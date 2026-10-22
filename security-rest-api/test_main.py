@@ -10,12 +10,6 @@ from main import app
 client = TestClient(app)
 
 
-def test_health_check():
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
-
-
 def test_register_and_login_and_me():
     # 每次测试使用不同用户名，避免重复注册冲突
     import uuid
@@ -116,3 +110,22 @@ def test_api_data_with_token():
     assert response.status_code == 200
     assert response.json()["requested_by"] == username
     assert len(response.json()["items"]) == 2
+
+def test_register_rejects_script_username():
+    response = client.post(
+        "/register",
+        json={
+            "username": "<script>alert(1)</script>",
+            "password": "TestPassword123!",
+        },
+    )
+
+    assert response.status_code == 422
+
+def test_escape_html():
+    from main import escape_html
+
+    result = escape_html('<script>alert("XSS")</script>')
+
+    assert "<script>" not in result
+    assert "&lt;script&gt;" in result
