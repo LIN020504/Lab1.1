@@ -1,106 +1,183 @@
-\# Lab1.1 — Security Projects
+# Лабораторная работа №1 — Разработка защищённого REST API
 
+## Описание проекта
+получить практический опыт разработки безопасного backend-приложения с автоматизированной проверкой кода на уязвимости. Освоить принципы защиты от OWASP Top 10 и интеграцию инструментов безопасности в процесс разработки.
 
+## API — доступные эндпоинты
 
-A collection of security and programming lab projects.
+### POST `/register`
 
+**Описание:** регистрация нового пользователя.
 
+Пример запроса:
 
-\## Projects
+```json
+{
+  "username": "admin",
+  "password": "123456789"
+}
+```
 
+Пример ответа (`201 Created`):
 
-
-\### Security REST API
-
-
-
-Location: `security-rest-api/`
-
-
-
-A Python REST API project demonstrating:
-
-
-
-\- User registration and login
-
-\- JWT-based authentication
-
-\- Password hashing
-
-\- Protected API endpoints
-
-\- Automated tests with pytest
-
-\- Static Application Security Testing (SAST) with Bandit
-
-\- Software Composition Analysis (SCA) with pip-audit
-
-
-
-\## Run locally
-
-
-
-Use Python 3.11 or a compatible version.
-
-
-
-Install dependencies:
-
-
-
-```bash
-
-python -m pip install -r security-rest-api/requirements.txt
-
+```json
+{
+  "id": 1,
+  "username": "testuser123"
+}
 ```
 
 
+### POST `/auth/login`
 
-Set a development-only JWT secret before starting the API.
+**Описание:** вход пользователя и получение JWT-токена для последующего доступа к защищённым эндпоинтам.
 
+Пример запроса:
 
+```json
+{
+  "username": "admin",
+  "password": "123456789"
+}
+```
 
-Windows CMD:
+Пример ответа (`200 OK`):
 
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer"
+}
+```
 
+При неверном имени пользователя или пароле возвращается `401 Unauthorized`.
 
-```bat
+### GET `/api/data`
 
-set JWT\_SECRET=replace-with-a-local-development-secret
+**Описание:** получение защищённых данных для авторизованных пользователей.
 
-python -m uvicorn main:app --reload
+Заголовок запроса:
 
+```http
+Authorization: Bearer <access_token>
+```
+
+Пример ответа (`200 OK`):
+
+```json
+{
+  "message": "Authenticated access granted",
+  "requested_by": "admin",
+  "items": [
+    {
+      "id": 1,
+      "title": "Security basics"
+    },
+    {
+      "id": 2,
+      "title": "REST API protection"
+    }
+  ]
+}
+```
+
+Если JWT-токен отсутствует, недействителен или просрочен, доступ к защищённому ресурсу отклоняется.
+
+### GET `/me`
+
+**Описание:** получение информации о текущем авторизованном пользователе.
+
+Заголовок запроса:
+
+```http
+Authorization: Bearer <access_token>
+```
+
+Пример ответа (`200 OK`):
+
+```json
+{
+  "id": 1,
+  "username": "admin"
+}
+```
+
+Информация о пользователе определяется на основе проверенного JWT-токена. Клиент не может самостоятельно указать идентификатор пользователя в качестве источника доверенной личности.
+
+## Реализованные меры защиты
+
+### 1. Защита от SQL Injection
+
+Для работы с базой данных используется SQLite с параметризованными SQL-запросами.
+
+Пример поиска пользователя при аутентификации:
+
+```python
+cursor = db.execute(
+    """
+    INSERT INTO users (username, password_hash)
+    VALUES (?, ?)
+    """,
+    (user.username, hashed_password),
+)
+```
+
+Пользовательские данные передаются отдельно от SQL-команды, а не объединяются со строкой запроса. Это снижает риск SQL Injection.
+
+При регистрации также используется параметризованный запрос:
+
+```python
+user = db.execute(
+    """
+    SELECT id, username, password_hash
+    FROM users
+    WHERE username = ?
+    """,
+    (credentials.username,),
+).fetchone()
+```
+
+### 2. Защита от XSS (Cross-Site Scripting)
+
+API возвращает данные в формате JSON и не формирует HTML-страницы из пользовательского ввода.
+
+Для имени пользователя применяется валидация: разрешены только латинские буквы, цифры и символ `_`. Поэтому строка вида `<script>alert(1)</script>` отклоняется на этапе проверки входных данных.
+
+Для контекстного экранирования HTML-символов предусмотрена функция `escape_html()`:
+
+```python
+from html import escape
+
+def escape_html(value: str) -> str:
+    """Escape HTML-sensitive characters in untrusted text."""
+    return escape(value, quote=True)
+```
+
+```python
+return UserResponse(
+    id=cursor.lastrowid,
+    username=escape_html(user.username),
+)
 ```
 
 
+### 3. Безопасная аутентификация и хранение паролей 
 
-Run these commands from the `security-rest-api` directory.
+Этот код отвечает за проверку пароля.
+```python
+if user is None or not password_hash.verify(
+    credentials.password, user["password_hash"]
+):
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Incorrect username or password",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+```
 
-
-
-\## Automated checks
-
-
-
-GitHub Actions runs tests and security scans on pushes and pull requests.
-
-
-
-\- pytest: automated tests
-
-\- Bandit: Python static security analysis
-
-\- pip-audit: dependency vulnerability checks
-
-
-
-\## Security notes
-
-
-
-Do not commit real secrets, virtual environments, or local database files. The JWT secret used in CI is for testing only and must not be used in production.
-
-
-
+Отвечает за создание JWT-токенов доступа
+```python
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+):
+```
